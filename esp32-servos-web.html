@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ESP32 Servos</title>
+<style>
+  :root {
+    --bg: #0F172A;
+    --card: #1E293B;
+    --text: #F8FAFC;
+    --subtext: #94A3B8;
+    --footer: #64748B;
+    --blue: #3B82F6;
+    --green: #10B981;
+    --red: #EF4444;
+    --dot-on: #34D399;
+    --dot-off: #F87171;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); height: 100%; }
+  * { box-sizing: border-box; }
+  body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+  .container {
+    width: 100%;
+    max-width: 480px;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+  }
+  .header { margin-top: 24px; margin-bottom: 28px; text-align: center; }
+  .header h1 { font-size: 30px; font-weight: 700; margin: 0; }
+  .header p { font-size: 15px; color: var(--subtext); margin: 4px 0 0; }
+
+  .status-card {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--card);
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 28px;
+  }
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 10px;
+    background: var(--dot-off);
+    transition: background 0.2s;
+  }
+  .status-dot.on { background: var(--dot-on); }
+  .status-text { font-size: 16px; font-weight: 600; }
+
+  button {
+    border: none;
+    border-radius: 16px;
+    padding: 18px;
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 14px;
+    cursor: pointer;
+    width: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button:disabled { opacity: 0.4; }
+  #scanBtn { background: var(--blue); }
+  #openBtn { background: var(--green); padding: 24px; font-size: 20px; font-weight: 700; }
+  #closeBtn { background: var(--red); }
+
+  .footer { text-align: center; color: var(--footer); font-size: 14px; margin-top: 8px; }
+  .log {
+    margin-top: 20px;
+    background: var(--card);
+    border-radius: 12px;
+    padding: 12px;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    color: var(--subtext);
+    max-height: 140px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>ESP32 Servos</h1>
+      <p>Control por Web Bluetooth</p>
+    </div>
+
+    <div class="status-card">
+      <div class="status-dot" id="statusDot"></div>
+      <div class="status-text" id="statusText">Desconectado</div>
+    </div>
+
+    <button id="scanBtn">Buscar y Conectar</button>
+    <button id="openBtn" disabled>Abrir Servomotores</button>
+    <button id="closeBtn" disabled>Cerrar Servomotores</button>
+
+    <div class="footer" id="servoState">Estado servos: —</div>
+
+    <div class="log" id="log">Listo. Toca "Buscar y Conectar".</div>
+  </div>
+
+<script>
+  // ==========================================================================
+  // Deben coincidir exactamente con las constantes del archivo .ino
+  // ==========================================================================
+  const DEVICE_NAME = "ESP32_Servos";
+  const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+  const CMD_CHARACTERISTIC_UUID = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+  const STATUS_CHARACTERISTIC_UUID = "0972ef8c-7613-4075-ad52-756f33d4da91";
+
+  const scanBtn = document.getElementById("scanBtn");
+  const openBtn = document.getElementById("openBtn");
+  const closeBtn = document.getElementById("closeBtn");
+  const statusDot = document.getElementById("statusDot");
+  const statusText = document.getElementById("statusText");
+  const servoStateEl = document.getElementById("servoState");
+  const logEl = document.getElementById("log");
+
+  let device = null;
+  let cmdCharacteristic = null;
+
+  function log(msg) {
+    logEl.textContent += "\n" + msg;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function setConnected(connected) {
+    statusDot.classList.toggle("on", connected);
+    statusText.textContent = connected ? "Conectado" : "Desconectado";
+    openBtn.disabled = !connected;
+    closeBtn.disabled = !connected;
+    scanBtn.disabled = connected;
+    scanBtn.textContent = connected ? "Conectado ✓" : "Buscar y Conectar";
+  }
+
+  async function connect() {
+    if (!navigator.bluetooth) {
+      log("Este navegador no soporta Web Bluetooth. Usa la app WebBLE.");
+      return;
+    }
+    try {
+      log("Buscando " + DEVICE_NAME + "...");
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ name: DEVICE_NAME }],
+        optionalServices: [SERVICE_UUID],
+      });
+
+      device.addEventListener("gattserverdisconnected", () => {
+        log("Desconectado.");
+        setConnected(false);
+      });
+
+      log("Conectando...");
+      const server = await device.gatt.connect();
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      cmdCharacteristic = await service.getCharacteristic(CMD_CHARACTERISTIC_UUID);
+
+      // Notificaciones de estado (opcional, si el navegador las soporta)
+      try {
+        const statusChar = await service.getCharacteristic(STATUS_CHARACTERISTIC_UUID);
+        await statusChar.startNotifications();
+        statusChar.addEventListener("characteristicvaluechanged", (e) => {
+          const value = new TextDecoder().decode(e.target.value);
+          servoStateEl.textContent = "Estado servos: " + (value === "OPEN" ? "Abierto" : "Cerrado");
+          log("Notificación ESP32: " + value);
+        });
+      } catch (e) {
+        log("(Notificaciones de estado no disponibles: " + e.message + ")");
+      }
+
+      log("¡Conectado a " + DEVICE_NAME + "!");
+      setConnected(true);
+    } catch (e) {
+      log("Error: " + e.message);
+      setConnected(false);
+    }
+  }
+
+  async function sendCommand(command) {
+    if (!cmdCharacteristic) {
+      log("No hay conexión activa.");
+      return;
+    }
+    try {
+      const data = new TextEncoder().encode(command);
+      await cmdCharacteristic.writeValue(data);
+      servoStateEl.textContent = "Estado servos: " + (command === "OPEN" ? "Abierto" : "Cerrado");
+      log("Comando enviado: " + command);
+    } catch (e) {
+      log("Error al enviar comando: " + e.message);
+    }
+  }
+
+  scanBtn.addEventListener("click", connect);
+  openBtn.addEventListener("click", () => sendCommand("OPEN"));
+  closeBtn.addEventListener("click", () => sendCommand("CLOSE"));
+</script>
+</body>
+</html>
